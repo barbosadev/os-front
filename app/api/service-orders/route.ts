@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { getMockConfig, createInitialMockOrders } from "@/app/api/service-orders/config/mock-config";
+import { getRemoteApiConfig, type RemoteApiConfig } from "@/app/api/service-orders/config/remote-api-config";
 import { serviceOrderFormSchema } from "@/lib/service-order-form-schema";
-import { createServiceOrderRecord, serviceOrdersSeed } from "@/services/service-orders-store";
+import { createServiceOrderRecord } from "@/services/service-orders-store";
 import type { ServiceOrder, ServiceOrderStatus } from "@/types/service-order";
 
-let serviceOrders = [...serviceOrdersSeed];
+let serviceOrders = createInitialMockOrders();
 let cachedAccessToken: string | null = null;
 
 type RemoteStatusName = "Aberta" | "Em andamento" | "Concluída" | "Cancelada";
@@ -29,16 +31,6 @@ interface RemoteCreateOrderPayload {
 
 interface RemoteUpdateStatusPayload {
   status: RemoteStatusName;
-}
-
-function getApiBaseUrl(): string | null {
-  const baseUrl = process.env.ORDERS_API_BASE_URL?.trim();
-  return baseUrl ? baseUrl.replace(/\/$/, "") : null;
-}
-
-function getApiOrdersUrl(): string | null {
-  const baseUrl = getApiBaseUrl();
-  return baseUrl ? `${baseUrl}/orders` : null;
 }
 
 async function parseRemoteError(response: Response): Promise<string> {
@@ -106,9 +98,8 @@ function toServiceOrder(remote: RemoteOrder): ServiceOrder {
   };
 }
 
-async function loginOnRemoteApi(baseUrl: string): Promise<string> {
-  const username = process.env.ORDERS_API_USERNAME?.trim() || "admin";
-  const password = process.env.ORDERS_API_PASSWORD?.trim() || "admin123";
+async function loginOnRemoteApi(remoteConfig: RemoteApiConfig): Promise<string> {
+  const { baseUrl, username, password } = remoteConfig;
 
   const authResponse = await fetch(`${baseUrl}/auth/login`, {
     method: "POST",
@@ -133,24 +124,20 @@ async function loginOnRemoteApi(baseUrl: string): Promise<string> {
   return payload.access_token;
 }
 
-async function getRemoteToken(baseUrl: string, forceRefresh = false): Promise<string> {
+async function getRemoteToken(remoteConfig: RemoteApiConfig, forceRefresh = false): Promise<string> {
   if (!forceRefresh && cachedAccessToken) {
     return cachedAccessToken;
   }
 
-  return loginOnRemoteApi(baseUrl);
+  return loginOnRemoteApi(remoteConfig);
 }
 
 async function fetchWithAutoLogin(
+  remoteConfig: RemoteApiConfig,
   url: string,
   init: RequestInit,
 ): Promise<Response> {
-  const baseUrl = getApiBaseUrl();
-  if (!baseUrl) {
-    throw new Error("URL base da API não configurada.");
-  }
-
-  const firstToken = await getRemoteToken(baseUrl);
+  const firstToken = await getRemoteToken(remoteConfig);
   const firstResponse = await fetch(url, {
     ...init,
     headers: {
@@ -163,7 +150,7 @@ async function fetchWithAutoLogin(
     return firstResponse;
   }
 
-  const refreshedToken = await getRemoteToken(baseUrl, true);
+  const refreshedToken = await getRemoteToken(remoteConfig, true);
   return fetch(url, {
     ...init,
     headers: {
@@ -174,9 +161,11 @@ async function fetchWithAutoLogin(
 }
 
 export async function GET() {
-  const apiOrdersUrl = getApiOrdersUrl();
-  if (apiOrdersUrl) {
-    const remoteResponse = await fetchWithAutoLogin(apiOrdersUrl, {
+  const remoteConfig = getRemoteApiConfig();
+  const mockConfig = getMockConfig();
+
+  if (remoteConfig && !mockConfig.enabled) {
+    const remoteResponse = await fetchWithAutoLogin(remoteConfig, remoteConfig.ordersUrl, {
       cache: "no-store",
     });
 
@@ -206,11 +195,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const apiOrdersUrl = getApiOrdersUrl();
-  if (apiOrdersUrl) {
+  const remoteConfig = getRemoteApiConfig();
+  const mockConfig = getMockConfig();
+
+  if (remoteConfig && !mockConfig.enabled) {
     const createPayload = toRemoteCreatePayload(result.data);
 
-    const remoteResponse = await fetchWithAutoLogin(apiOrdersUrl, {
+    const remoteResponse = await fetchWithAutoLogin(remoteConfig, remoteConfig.ordersUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -230,7 +221,7 @@ export async function POST(request: Request) {
         status: mapFrontStatusToRemote(result.data.status),
       };
 
-      const statusResponse = await fetchWithAutoLogin(`${apiOrdersUrl}/${remoteOrder.id}/status`, {
+      const statusResponse = await fetchWithAutoLogin(remoteConfig, `${remoteConfig.ordersUrl}/${remoteOrder.id}/status`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
