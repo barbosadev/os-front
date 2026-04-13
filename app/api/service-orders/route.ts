@@ -5,14 +5,16 @@ import { serviceOrderFormSchema } from "@/lib/service-order-form-schema";
 import { createServiceOrderRecord, serviceOrdersSeed } from "@/services/service-orders-store";
 
 let serviceOrders = [...serviceOrdersSeed];
+let cachedAccessToken: string | null = null;
+
+function getApiBaseUrl(): string | null {
+  const baseUrl = process.env.ORDERS_API_BASE_URL?.trim();
+  return baseUrl ? baseUrl.replace(/\/$/, "") : null;
+}
 
 function getApiOrdersUrl(): string | null {
-  const baseUrl = process.env.ORDERS_API_BASE_URL?.trim();
-  if (!baseUrl) {
-    return null;
-  }
-
-  return `${baseUrl.replace(/\/$/, "")}/orders`;
+  const baseUrl = getApiBaseUrl();
+  return baseUrl ? `${baseUrl}/orders` : null;
 }
 
 async function parseRemoteError(response: Response): Promise<string> {
@@ -20,10 +22,77 @@ async function parseRemoteError(response: Response): Promise<string> {
   return payload?.message ?? "Falha ao comunicar com a API de ordens de serviço.";
 }
 
+async function loginOnRemoteApi(baseUrl: string): Promise<string> {
+  const username = process.env.ORDERS_API_USERNAME?.trim() || "admin";
+  const password = process.env.ORDERS_API_PASSWORD?.trim() || "admin123";
+
+  const authResponse = await fetch(`${baseUrl}/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+    cache: "no-store",
+  });
+
+  if (!authResponse.ok) {
+    const message = await parseRemoteError(authResponse);
+    throw new Error(message);
+  }
+
+  const payload = (await authResponse.json()) as { access_token?: string };
+  if (!payload.access_token) {
+    throw new Error("Resposta de login inválida da API remota.");
+  }
+
+  cachedAccessToken = payload.access_token;
+  return payload.access_token;
+}
+
+async function getRemoteToken(baseUrl: string, forceRefresh = false): Promise<string> {
+  if (!forceRefresh && cachedAccessToken) {
+    return cachedAccessToken;
+  }
+
+  return loginOnRemoteApi(baseUrl);
+}
+
+async function fetchWithAutoLogin(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
+    throw new Error("URL base da API não configurada.");
+  }
+
+  const firstToken = await getRemoteToken(baseUrl);
+  const firstResponse = await fetch(url, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      Authorization: `Bearer ${firstToken}`,
+    },
+  });
+
+  if (firstResponse.status !== 401) {
+    return firstResponse;
+  }
+
+  const refreshedToken = await getRemoteToken(baseUrl, true);
+  return fetch(url, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      Authorization: `Bearer ${refreshedToken}`,
+    },
+  });
+}
+
 export async function GET() {
   const apiOrdersUrl = getApiOrdersUrl();
   if (apiOrdersUrl) {
-    const remoteResponse = await fetch(apiOrdersUrl, {
+    const remoteResponse = await fetchWithAutoLogin(apiOrdersUrl, {
       cache: "no-store",
     });
 
@@ -55,7 +124,7 @@ export async function POST(request: Request) {
 
   const apiOrdersUrl = getApiOrdersUrl();
   if (apiOrdersUrl) {
-    const remoteResponse = await fetch(apiOrdersUrl, {
+    const remoteResponse = await fetchWithAutoLogin(apiOrdersUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

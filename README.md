@@ -44,12 +44,15 @@ O front usa mock local por padrão. Para apontar para a API em produção, confi
 
 ```bash
 ORDERS_API_BASE_URL=https://slategray-caribou-222758.hostingersite.com
+ORDERS_API_USERNAME=admin
+ORDERS_API_PASSWORD=admin123
 ```
 
 Comportamento:
 
 - Sem `ORDERS_API_BASE_URL`: usa mocks locais em `app/api/service-orders/route.ts`.
-- Com `ORDERS_API_BASE_URL`: o route handler faz proxy para `${ORDERS_API_BASE_URL}/orders`.
+- Com `ORDERS_API_BASE_URL`: o route handler faz login automático em `${ORDERS_API_BASE_URL}/auth/login` e usa o token JWT para consumir `${ORDERS_API_BASE_URL}/orders`.
+- `ORDERS_API_USERNAME` e `ORDERS_API_PASSWORD` são opcionais. Se não forem definidos, o front usa `admin` / `admin123`.
 
 ## Como executar
 
