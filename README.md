@@ -38,6 +38,19 @@ __tests__/
 - Paginação simples.
 - Layout responsivo com Tailwind CSS.
 
+## Variáveis de ambiente
+
+O front usa mock local por padrão. Para apontar para a API em produção, configure:
+
+```bash
+ORDERS_API_BASE_URL=https://slategray-caribou-222758.hostingersite.com
+```
+
+Comportamento:
+
+- Sem `ORDERS_API_BASE_URL`: usa mocks locais em `app/api/service-orders/route.ts`.
+- Com `ORDERS_API_BASE_URL`: o route handler faz proxy para `${ORDERS_API_BASE_URL}/orders`.
+
 ## Como executar
 
 1. Instale as dependências:
