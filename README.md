@@ -2,6 +2,13 @@
 
 Aplicação web em Next.js para gerenciamento de Ordens de Serviço com foco em organização de código, estado global simples e mock de API no App Router.
 
+### Veja em produção:
+Esta aplicação foi publicada em produção para facilitar a visualização rápida.
+
+Front em: https://darkorange-goldfish-409367.hostingersite.com/
+
+Swagger da Api em: https://slategray-caribou-222758.hostingersite.com/docs
+
 ## Estrutura principal
 
 ```text
