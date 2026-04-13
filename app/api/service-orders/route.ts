@@ -3,9 +3,33 @@ import { z } from "zod";
 
 import { serviceOrderFormSchema } from "@/lib/service-order-form-schema";
 import { createServiceOrderRecord, serviceOrdersSeed } from "@/services/service-orders-store";
+import type { ServiceOrder, ServiceOrderStatus } from "@/types/service-order";
 
 let serviceOrders = [...serviceOrdersSeed];
 let cachedAccessToken: string | null = null;
+
+type RemoteStatusName = "Aberta" | "Em andamento" | "Concluída" | "Cancelada";
+
+interface RemoteOrder {
+  id: number;
+  cliente: string;
+  descricao: string;
+  valor_estimado: number | string;
+  status: {
+    nome: RemoteStatusName;
+  };
+  data_criacao: string;
+}
+
+interface RemoteCreateOrderPayload {
+  cliente: string;
+  descricao: string;
+  valor_estimado: number;
+}
+
+interface RemoteUpdateStatusPayload {
+  status: RemoteStatusName;
+}
 
 function getApiBaseUrl(): string | null {
   const baseUrl = process.env.ORDERS_API_BASE_URL?.trim();
@@ -18,8 +42,68 @@ function getApiOrdersUrl(): string | null {
 }
 
 async function parseRemoteError(response: Response): Promise<string> {
-  const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-  return payload?.message ?? "Falha ao comunicar com a API de ordens de serviço.";
+  const payload = (await response.json().catch(() => null)) as
+    | { message?: string | string[] }
+    | null;
+
+  if (Array.isArray(payload?.message)) {
+    return payload.message.join(" | ");
+  }
+
+  if (typeof payload?.message === "string" && payload.message.trim().length > 0) {
+    return payload.message;
+  }
+
+  return "Falha ao comunicar com a API de ordens de serviço.";
+}
+
+function mapRemoteStatusToFront(status: RemoteStatusName): ServiceOrderStatus {
+  switch (status) {
+    case "Aberta":
+      return "open";
+    case "Em andamento":
+      return "in_progress";
+    case "Concluída":
+      return "completed";
+    case "Cancelada":
+      return "canceled";
+  }
+}
+
+function mapFrontStatusToRemote(status: ServiceOrderStatus): RemoteStatusName {
+  switch (status) {
+    case "open":
+      return "Aberta";
+    case "in_progress":
+      return "Em andamento";
+    case "completed":
+      return "Concluída";
+    case "canceled":
+      return "Cancelada";
+  }
+}
+
+function toRemoteCreatePayload(input: z.infer<typeof serviceOrderFormSchema>): RemoteCreateOrderPayload {
+  return {
+    cliente: input.client,
+    descricao: input.description,
+    valor_estimado: input.estimatedValue,
+  };
+}
+
+function toServiceOrder(remote: RemoteOrder): ServiceOrder {
+  const createdAt = remote.data_criacao;
+  const createdYear = new Date(createdAt).getFullYear();
+
+  return {
+    id: remote.id,
+    orderNumber: `OS-${Number.isNaN(createdYear) ? new Date().getFullYear() : createdYear}-${String(remote.id).padStart(3, "0")}`,
+    client: remote.cliente,
+    description: remote.descricao,
+    estimatedValue: Number(remote.valor_estimado),
+    status: mapRemoteStatusToFront(remote.status.nome),
+    createdAt,
+  };
 }
 
 async function loginOnRemoteApi(baseUrl: string): Promise<string> {
@@ -101,8 +185,8 @@ export async function GET() {
       return NextResponse.json({ message }, { status: remoteResponse.status });
     }
 
-    const remoteOrders = await remoteResponse.json();
-    return NextResponse.json(remoteOrders);
+    const remoteOrders = (await remoteResponse.json()) as RemoteOrder[];
+    return NextResponse.json(remoteOrders.map(toServiceOrder));
   }
 
   return NextResponse.json(serviceOrders);
@@ -124,12 +208,14 @@ export async function POST(request: Request) {
 
   const apiOrdersUrl = getApiOrdersUrl();
   if (apiOrdersUrl) {
+    const createPayload = toRemoteCreatePayload(result.data);
+
     const remoteResponse = await fetchWithAutoLogin(apiOrdersUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(result.data),
+      body: JSON.stringify(createPayload),
     });
 
     if (!remoteResponse.ok) {
@@ -137,8 +223,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ message }, { status: remoteResponse.status });
     }
 
-    const remoteOrder = await remoteResponse.json();
-    return NextResponse.json(remoteOrder, { status: 201 });
+    let remoteOrder = (await remoteResponse.json()) as RemoteOrder;
+
+    if (result.data.status !== "open") {
+      const statusPayload: RemoteUpdateStatusPayload = {
+        status: mapFrontStatusToRemote(result.data.status),
+      };
+
+      const statusResponse = await fetchWithAutoLogin(`${apiOrdersUrl}/${remoteOrder.id}/status`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(statusPayload),
+      });
+
+      if (!statusResponse.ok) {
+        const message = await parseRemoteError(statusResponse);
+        return NextResponse.json({ message }, { status: statusResponse.status });
+      }
+
+      remoteOrder = (await statusResponse.json()) as RemoteOrder;
+    }
+
+    return NextResponse.json(toServiceOrder(remoteOrder), { status: 201 });
   }
 
   const newOrder = createServiceOrderRecord(result.data, serviceOrders);
